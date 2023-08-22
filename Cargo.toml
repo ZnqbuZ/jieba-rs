@@ -43,10 +43,3 @@ default = ["default-dict"]
 default-dict = []
 tfidf = ["ordered-float"]
 textrank = ["ordered-float"]
-
-[workspace]
-members = [
-    ".",
-    "capi",
-    "examples/weicheng"
-]
