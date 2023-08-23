@@ -194,7 +194,7 @@ pub struct Token<'a> {
 }
 
 /// A tagged word
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Tag<'a> {
     /// Word
     pub word: &'a str,
