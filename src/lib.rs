@@ -77,6 +77,7 @@ use std::io::BufRead;
 use cedarwood::Cedar;
 use hashbrown::HashMap;
 use regex::{Match, Matches, Regex};
+use serde::{Deserialize, Serialize};
 
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, fxhash::FxBuildHasher>;
 
@@ -182,7 +183,7 @@ pub enum TokenizeMode {
 }
 
 /// A Token
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Token<'a> {
     /// Word of the token
     pub word: &'a str,
