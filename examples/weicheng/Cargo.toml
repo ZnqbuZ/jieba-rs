@@ -9,4 +9,4 @@ edition.workspace = true
 jieba-rs = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-tikv-jemallocator = "0.6.0"
+tikv-jemallocator = "0.7.0"
