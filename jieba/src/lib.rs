@@ -72,14 +72,17 @@
 //! ```
 //!
 
-use std::cmp::Ordering;
 use std::collections::HashMap;
+#[cfg(any(feature = "tfidf", feature = "textrank"))]
+use std::collections::HashSet;
 use std::fmt;
 use std::io::BufRead;
 
 use cedarwood::Cedar;
 
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, rustc_hash::FxBuildHasher>;
+#[cfg(any(feature = "tfidf", feature = "textrank"))]
+pub(crate) type FxHashSet<K> = HashSet<K, rustc_hash::FxBuildHasher>;
 
 pub use crate::errors::Error;
 pub use crate::hmm::HmmModel;
@@ -296,6 +299,7 @@ pub struct Jieba {
     records: Vec<Record>,
     cedar: Cedar,
     total: usize,
+    log_total: f64,
     hmm_model: Option<HmmModel>,
 }
 
@@ -322,6 +326,7 @@ impl Jieba {
             records: Vec::new(),
             cedar: Cedar::new(),
             total: 0,
+            log_total: 0.0f64.ln(),
             hmm_model: None,
         }
     }
@@ -368,7 +373,11 @@ impl Jieba {
         use std::io::BufReader;
 
         let mut default_dict = BufReader::new(DEFAULT_DICT.as_bytes());
-        self.load_dict(&mut default_dict).unwrap();
+        if self.records.is_empty() {
+            self.load_unique_dict(&mut default_dict).unwrap();
+        } else {
+            self.load_dict(&mut default_dict).unwrap();
+        }
     }
 
     /// Set a custom HMM model for segmentation.
@@ -419,6 +428,7 @@ impl Jieba {
         self.records.clear();
         self.cedar = Cedar::new();
         self.total = 0;
+        self.update_log_total();
     }
 
     /// Add word to dict, return `freq`
@@ -449,6 +459,7 @@ impl Jieba {
                 self.total += freq;
             }
         };
+        self.update_log_total();
 
         freq
     }
@@ -490,6 +501,14 @@ impl Jieba {
     /// * There is an issue reading from the provided `BufRead` source.
     /// * A line in the dictionary file contains invalid frequency data (not a valid integer).
     pub fn load_dict<R: BufRead>(&mut self, dict: &mut R) -> Result<(), Error> {
+        self.load_dict_inner(dict, true)
+    }
+
+    fn load_unique_dict<R: BufRead>(&mut self, dict: &mut R) -> Result<(), Error> {
+        self.load_dict_inner(dict, false)
+    }
+
+    fn load_dict_inner<R: BufRead>(&mut self, dict: &mut R, check_duplicates: bool) -> Result<(), Error> {
         let mut buf = String::new();
         self.total = 0;
 
@@ -511,23 +530,35 @@ impl Jieba {
                         .unwrap_or(Ok(0))?;
                     let tag = iter.next().unwrap_or("");
 
-                    match self.cedar.exact_match_search(word) {
-                        Some((word_id, _, _)) => {
-                            self.records[word_id as usize].set_freq(freq);
-                        }
-                        None => {
-                            let word_id = self.records.len() as i32;
-                            self.records.push(Record::new(freq, tag.into()));
-                            self.cedar.update(word, word_id);
-                        }
-                    };
+                    if check_duplicates {
+                        match self.cedar.exact_match_search(word) {
+                            Some((word_id, _, _)) => {
+                                self.records[word_id as usize].set_freq(freq);
+                            }
+                            None => {
+                                let word_id = self.records.len() as i32;
+                                self.records.push(Record::new(freq, tag.into()));
+                                self.cedar.update(word, word_id);
+                            }
+                        };
+                    } else {
+                        let word_id = self.records.len() as i32;
+                        self.records.push(Record::new(freq, tag.into()));
+                        self.cedar.update(word, word_id);
+                    }
                 }
             }
             buf.clear();
         }
         self.total = self.records.iter().map(|n| n.freq).sum();
+        self.update_log_total();
 
         Ok(())
+    }
+
+    #[inline]
+    fn update_log_total(&mut self) {
+        self.log_total = (self.total as f64).ln();
     }
 
     fn get_word_freq(&self, word: &str, default: usize) -> usize {
@@ -539,7 +570,7 @@ impl Jieba {
 
     /// Suggest word frequency to force the characters in a word to be joined or split.
     pub fn suggest_freq(&self, segment: &str) -> usize {
-        let logtotal = (self.total as f64).ln();
+        let logtotal = self.log_total;
         let logfreq = self.cut(segment, false).iter().fold(0f64, |freq, token| {
             freq + (self.get_word_freq(token.word, 1) as f64).ln() - logtotal
         });
@@ -554,26 +585,31 @@ impl Jieba {
             route.resize(str_len + 1, (0.0, 0));
         }
 
-        let logtotal = (self.total as f64).ln();
+        let logtotal = self.log_total;
         let log1 = 0.0f64 - logtotal; // ln(1) - logtotal, precomputed for freq=1 case
         let mut prev_byte_start = str_len;
         let curr = sentence.char_indices().map(|x| x.0).rev();
         for byte_start in curr {
-            let pair = dag
-                .iter_edges(byte_start)
-                .map(|(byte_end, word_id)| {
-                    let log_freq = if word_id != sparse_dag::NO_MATCH {
-                        self.records[word_id as usize].log_freq
-                    } else {
-                        0.0 // ln(1)
-                    };
+            let mut best = None;
+            for (byte_end, word_id) in dag.iter_edges(byte_start) {
+                let log_freq = if word_id != sparse_dag::NO_MATCH {
+                    self.records[word_id as usize].log_freq
+                } else {
+                    0.0 // ln(1)
+                };
+                let prob = log_freq - logtotal + route[byte_end].0;
 
-                    (log_freq - logtotal + route[byte_end].0, byte_end)
-                })
-                .max_by(|x, y| x.partial_cmp(y).unwrap_or(Ordering::Equal));
+                if let Some((best_prob, best_byte_end)) = best {
+                    if prob > best_prob || (prob == best_prob && byte_end > best_byte_end) {
+                        best = Some((prob, byte_end));
+                    }
+                } else {
+                    best = Some((prob, byte_end));
+                }
+            }
 
-            if let Some(p) = pair {
-                route[byte_start] = p;
+            if let Some(best) = best {
+                route[byte_start] = best;
             } else {
                 let byte_end = prev_byte_start;
                 route[byte_start] = (log1 + route[byte_end].0, byte_end);
@@ -598,10 +634,16 @@ impl Jieba {
 
     /// Emits `Token`s directly with unicode positions for cut_all,
     /// avoiding the need for a separate byte-to-unicode lookup table.
-    fn cut_all_tokens<'a>(&self, block: &'a str, base: usize, block_unicode_start: usize, tokens: &mut Vec<Token<'a>>) {
+    fn cut_all_tokens<'a>(
+        &self,
+        block: &'a str,
+        base: usize,
+        block_unicode_start: usize,
+        tokens: &mut Vec<Token<'a>>,
+        dag: &mut StaticSparseDAG,
+    ) {
         let str_len = block.len();
-        let mut dag = StaticSparseDAG::with_size_hint(block.len());
-        self.dag(block, &mut dag);
+        self.dag(block, dag);
 
         let block_base = block.as_ptr() as usize;
         let byte_offset_in_sentence = block_base - base;
@@ -625,6 +667,7 @@ impl Jieba {
                 });
             }
         }
+        dag.clear();
     }
 
     fn cut_dag_no_hmm<'a>(
@@ -838,6 +881,7 @@ impl Jieba {
 
         let heuristic_capacity = sentence.len() / 2;
         let mut tokens = Vec::with_capacity(heuristic_capacity);
+        let mut dag = StaticSparseDAG::with_size_hint(heuristic_capacity);
 
         let splitter = SplitByCharacterClass::new(sentence, is_han_cut_all);
 
@@ -849,7 +893,7 @@ impl Jieba {
                     let block_unicode_start = unicode_offset;
                     // Advance unicode_offset past this block
                     unicode_offset += char_count(block);
-                    self.cut_all_tokens(block, base, block_unicode_start, &mut tokens);
+                    self.cut_all_tokens(block, base, block_unicode_start, &mut tokens, &mut dag);
                 }
                 SplitState::Unmatched(_) => {
                     let block = state.as_str();
@@ -1038,7 +1082,7 @@ impl Jieba {
         #[cfg(feature = "default-dict")]
         {
             // Only use posseg HMM for words containing CJK characters
-            if word.chars().any(|c| is_cjk(c)) {
+            if word.chars().any(is_cjk) {
                 let results = posseg::cut_with_pos(word);
                 if results.len() == 1 {
                     return results[0].1;
