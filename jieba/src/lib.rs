@@ -79,6 +79,8 @@ use std::fmt;
 use std::io::BufRead;
 
 use cedarwood::Cedar;
+#[cfg(feature = "ts-rs")]
+pub use ts_rs;
 #[cfg(target_family = "wasm")]
 use {
     serde::{Deserialize, Serialize},
@@ -244,6 +246,7 @@ pub enum TokenizeMode {
 }
 
 /// A Token
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
 #[cfg_attr(target_family = "wasm", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Token<'a> {
@@ -260,6 +263,7 @@ pub struct Token<'a> {
 }
 
 /// A tagged word
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
 #[cfg_attr(target_family = "wasm", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tag<'a> {
