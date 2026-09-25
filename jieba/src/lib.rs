@@ -78,6 +78,14 @@ use std::collections::HashSet;
 use std::fmt;
 use std::io::BufRead;
 
+#[cfg(feature = "ts-rs")]
+pub use ts_rs;
+#[cfg(target_family = "wasm")]
+use {
+    serde::{Deserialize, Serialize},
+    wasm_bindgen::prelude::*,
+};
+
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, rustc_hash::FxBuildHasher>;
 #[cfg(any(feature = "tfidf", feature = "textrank"))]
 pub(crate) type FxHashSet<K> = HashSet<K, rustc_hash::FxBuildHasher>;
@@ -315,6 +323,7 @@ impl<'t> SplitState<'t> {
     }
 }
 
+#[cfg_attr(target_family = "wasm", wasm_bindgen)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenizeMode {
     /// Default mode
@@ -324,6 +333,8 @@ pub enum TokenizeMode {
 }
 
 /// A Token
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(target_family = "wasm", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Token<'a> {
     /// Word of the token
@@ -339,6 +350,8 @@ pub struct Token<'a> {
 }
 
 /// A tagged word
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(target_family = "wasm", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tag<'a> {
     /// Word
